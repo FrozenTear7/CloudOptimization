@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Cloud Optimization</string>
+    <string name="chargeCounterLabel">Capacity (uAh)</string>
+    <string name="capacityLabel">Capacity (%)</string>
 </resources>
