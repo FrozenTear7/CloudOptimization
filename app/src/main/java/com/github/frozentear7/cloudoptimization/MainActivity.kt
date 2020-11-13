@@ -55,7 +55,7 @@ class MainActivity : AppCompatActivity() {
                         totalEnergyUsed += prevChargeCounter - chargeCounter
                     prevChargeCounter = chargeCounter
 
-                    Log.i(TAG, "Total energy used = $totalEnergyUsed %")
+                    Log.i(TAG, "Total energy used = $totalEnergyUsed uAh")
                     chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
 
 //                    val energyCounter: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
