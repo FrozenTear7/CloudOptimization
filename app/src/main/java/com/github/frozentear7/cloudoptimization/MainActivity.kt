@@ -18,10 +18,15 @@ class MainActivity : AppCompatActivity() {
 
         val chargeCounterValueTextView = findViewById<TextView>(R.id.chargeCounterValueTextView)
         val capacityValueTextView = findViewById<TextView>(R.id.capacityValueTextView)
+        val chargeCounterChangeValueTextView =
+            findViewById<TextView>(R.id.chargeCounterChangeValueTextView)
         val currentTimeTextView = findViewById<TextView>(R.id.currentTimeTextView)
 
-        val mBatteryManager: BatteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val mBatteryManager: BatteryManager =
+            getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val scope = CoroutineScope(Dispatchers.Default)
+        var prevChargeCounter = -1L
+        var totalEnergyUsed = 0L
 
         scope.launch {
             withContext(Dispatchers.Main) {
@@ -30,7 +35,8 @@ class MainActivity : AppCompatActivity() {
                     println("Current Date and Time is: $current")
                     currentTimeTextView.text = current.toString()
 
-                    val chargeCounter: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+                    val chargeCounter: Long =
+                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
                     Log.i(TAG, "Remaining battery capacity = $chargeCounter uAh")
                     chargeCounterValueTextView.text = chargeCounter.toString()
 
@@ -40,9 +46,17 @@ class MainActivity : AppCompatActivity() {
 //                    val currentAvg: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
 //                    Log.i(TAG, "Average battery current = $currentAvg uA")
 
-                    val capacity: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                    val capacity: Long =
+                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                     Log.i(TAG, "Remaining battery capacity = $capacity %")
                     capacityValueTextView.text = capacity.toString()
+
+                    if (prevChargeCounter != -1L)
+                        totalEnergyUsed += prevChargeCounter - chargeCounter
+                    prevChargeCounter = chargeCounter
+
+                    Log.i(TAG, "Total energy used = $totalEnergyUsed %")
+                    chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
 
 //                    val energyCounter: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
 //                    Log.i(TAG, "Remaining energy = $energyCounter nWh")

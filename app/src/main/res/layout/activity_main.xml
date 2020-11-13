@@ -33,7 +33,7 @@
         android:layout_marginTop="32dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/capacityValueTextView" />
+        app:layout_constraintTop_toBottomOf="@+id/chargeCounterChangeValueTextView" />
 
     <TextView
         android:id="@+id/chargeCounterValueTextView"
@@ -53,5 +53,24 @@
         app:layout_constraintHorizontal_bias="0.528"
         app:layout_constraintStart_toEndOf="@+id/capacityTextView"
         app:layout_constraintTop_toBottomOf="@+id/chargeCounterValueTextView" />
+
+    <TextView
+        android:id="@+id/chargeCounterChangeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="32dp"
+        android:text="@string/chargeCounterChangeLabel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/capacityValueTextView" />
+
+    <TextView
+        android:id="@+id/chargeCounterChangeValueTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@+id/chargeCounterChangeTextView"
+        app:layout_constraintTop_toBottomOf="@+id/capacityValueTextView" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
