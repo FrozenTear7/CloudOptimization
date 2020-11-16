@@ -1,23 +1,22 @@
 package com.github.frozentear7.cloudoptimization
 
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
-import android.provider.MediaStore
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.FileProvider
 import com.googlecode.tesseract.android.TessBaseAPI
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.rendering.PDFRenderer
+import com.tom_roush.pdfbox.util.PDFBoxResourceLoader
 import kotlinx.coroutines.*
 import java.io.*
 import java.time.LocalDateTime
@@ -26,13 +25,12 @@ import java.time.LocalDateTime
 private const val TAG = "MainActivity"
 private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "/Tess"
 private const val lang = "eng"
-private const val PHOTO_TAKEN: String = "photo_taken"
 
 class MainActivity : AppCompatActivity() {
-    private var path: String = "$DATA_PATH/ocr.jpg";
-    private var photoTaken: Boolean = false
-
+    private lateinit var pageImage: Bitmap
+    private lateinit var root: File
     private lateinit var ocrResultEditText: EditText
+    private val scope = CoroutineScope(Dispatchers.Default)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,7 +47,6 @@ class MainActivity : AppCompatActivity() {
 
         val mBatteryManager: BatteryManager =
             getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val scope = CoroutineScope(Dispatchers.Default)
         var prevChargeCounter = -1L
         var totalEnergyUsed = 0L
 
@@ -93,6 +90,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Setup energy counters
         scope.launch {
             withContext(Dispatchers.Main) {
                 while (true) {
@@ -133,108 +131,98 @@ class MainActivity : AppCompatActivity() {
 
         takePhotoButton.setOnClickListener {
             Log.v(TAG, "Starting Camera app")
-            startCameraActivity()
+            runPdfOCR()
         }
     }
 
-    private fun startCameraActivity() {
-        val file = File(path)
-//        val outputFileUri = Uri.fromFile(file)
-        val outputFileUri = FileProvider.getUriForFile(
-            applicationContext,
-            BuildConfig.APPLICATION_ID + ".provider",
-            file
-        )
-        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputFileUri)
-        startActivityForResult(intent, 0)
-    }
+    private fun runPdfOCR() {
+        PDFBoxResourceLoader.init(applicationContext)
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        Log.i(TAG, "resultCode: $resultCode")
-        if (resultCode == -1) {
-            onPhotoTaken()
-        } else {
-            Log.v(TAG, "User cancelled")
-        }
-    }
+        GlobalScope.launch {
+            // Render the page and save it to an image file
+            try {
+                // Load in an already created PDF
+                val document: PDDocument =
+                    PDDocument.load(assets.open("Raport projektu - CEA_Bus_Klemens_Mendroch.pdf"))
+                // Create a renderer for the document
+                val renderer = PDFRenderer(document)
+                // Render the image to an RGB Bitmap
+                pageImage = renderer.renderImage(0, 1f, Bitmap.Config.RGB_565)
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putBoolean(PHOTO_TAKEN, photoTaken)
-    }
+                // Save the render result to an image
+                root =
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                val path = root.absolutePath + "/render.jpg"
+                val renderFile = File(path)
+                val fileOut = FileOutputStream(renderFile)
+                pageImage.compress(Bitmap.CompressFormat.JPEG, 100, fileOut)
+                fileOut.close()
 
-    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
-        Log.i(TAG, "onRestoreInstanceState()")
-        if (savedInstanceState.getBoolean(PHOTO_TAKEN)) {
-            onPhotoTaken()
-        }
-    }
+                val options = BitmapFactory.Options()
+                options.inSampleSize = 4
+                var bitmap = BitmapFactory.decodeFile(path, options)
+                try {
+                    val exif = ExifInterface(path)
+                    val exifOrientation: Int = exif.getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                    Log.v(TAG, "Orient: $exifOrientation")
+                    var rotate = 0
+                    when (exifOrientation) {
+                        ExifInterface.ORIENTATION_ROTATE_90 -> rotate = 90
+                        ExifInterface.ORIENTATION_ROTATE_180 -> rotate = 180
+                        ExifInterface.ORIENTATION_ROTATE_270 -> rotate = 270
+                    }
+                    Log.v(TAG, "Rotation: $rotate")
+                    if (rotate != 0) {
 
-    private fun onPhotoTaken() {
-        photoTaken = true
-        val options = BitmapFactory.Options()
-        options.inSampleSize = 4
-        var bitmap = BitmapFactory.decodeFile(path, options)
-        try {
-            val exif = ExifInterface(path)
-            val exifOrientation: Int = exif.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_NORMAL
-            )
-            Log.v(TAG, "Orient: $exifOrientation")
-            var rotate = 0
-            when (exifOrientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> rotate = 90
-                ExifInterface.ORIENTATION_ROTATE_180 -> rotate = 180
-                ExifInterface.ORIENTATION_ROTATE_270 -> rotate = 270
+                        // Getting width & height of the given image.
+                        val w = bitmap.width
+                        val h = bitmap.height
+
+                        // Setting pre rotate
+                        val mtx = Matrix()
+                        mtx.preRotate(rotate.toFloat())
+
+                        // Rotating Bitmap
+                        bitmap = Bitmap.createBitmap(bitmap, 0, 0, w, h, mtx, false)
+                    }
+
+                    // Convert to ARGB_8888, required by tess
+                    bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                } catch (e: IOException) {
+                    Log.e(TAG, "Couldn't correct orientation: $e")
+                }
+
+                // _image.setImageBitmap( bitmap );
+                Log.v(TAG, "Before baseApi")
+                val baseApi = TessBaseAPI()
+                baseApi.setDebug(true)
+                baseApi.init(DATA_PATH, lang)
+                baseApi.setImage(bitmap)
+                var recognizedText = baseApi.utF8Text
+                baseApi.end()
+
+                // You now have the text in recognizedText var, you can do anything with it.
+                // We will display a stripped out trimmed alpha-numeric version of it (if lang is eng)
+                // so that garbage doesn't make it to the display.
+                Log.v(TAG, "OCRED TEXT: $recognizedText")
+                if (lang.equals("eng", ignoreCase = true)) {
+                    recognizedText = recognizedText.replace("[^a-zA-Z0-9]+".toRegex(), " ")
+                }
+                recognizedText = recognizedText.trim { it <= ' ' }
+                if (recognizedText.isNotEmpty()) {
+                    ocrResultEditText.setText(
+                        if (ocrResultEditText.text.toString()
+                                .isEmpty()
+                        ) recognizedText else ocrResultEditText.text.toString() + " " + recognizedText
+                    )
+                    ocrResultEditText.setSelection(ocrResultEditText.text.toString().length)
+                }
+            } catch (e: IOException) {
+                Log.e(TAG, "Exception thrown while rendering file", e)
             }
-            Log.v(TAG, "Rotation: $rotate")
-            if (rotate != 0) {
-
-                // Getting width & height of the given image.
-                val w = bitmap.width
-                val h = bitmap.height
-
-                // Setting pre rotate
-                val mtx = Matrix()
-                mtx.preRotate(rotate.toFloat())
-
-                // Rotating Bitmap
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, w, h, mtx, false)
-            }
-
-            // Convert to ARGB_8888, required by tess
-            bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-        } catch (e: IOException) {
-            Log.e(TAG, "Couldn't correct orientation: $e")
-        }
-
-        // _image.setImageBitmap( bitmap );
-        Log.v(TAG, "Before baseApi")
-        val baseApi = TessBaseAPI()
-        baseApi.setDebug(true)
-        baseApi.init(DATA_PATH, lang)
-        baseApi.setImage(bitmap)
-        var recognizedText = baseApi.utF8Text
-        baseApi.end()
-
-        // You now have the text in recognizedText var, you can do anything with it.
-        // We will display a stripped out trimmed alpha-numeric version of it (if lang is eng)
-        // so that garbage doesn't make it to the display.
-        Log.v(TAG, "OCRED TEXT: $recognizedText")
-        if (lang.equals("eng", ignoreCase = true)) {
-            recognizedText = recognizedText.replace("[^a-zA-Z0-9]+".toRegex(), " ")
-        }
-        recognizedText = recognizedText.trim { it <= ' ' }
-        if (recognizedText.isNotEmpty()) {
-            ocrResultEditText.setText(
-                if (ocrResultEditText.text.toString()
-                        .isEmpty()
-                ) recognizedText else ocrResultEditText.text.toString() + " " + recognizedText
-            )
-            ocrResultEditText.setSelection(ocrResultEditText.text.toString().length)
         }
     }
 }
