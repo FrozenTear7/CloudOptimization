@@ -3,4 +3,5 @@
     <string name="chargeCounterLabel">Capacity (uAh)</string>
     <string name="capacityLabel">Capacity (%)</string>
     <string name="chargeCounterChangeLabel">Energy used total (uAh)</string>
+    <string name="takePhotoLabel">Take photo</string>
 </resources>
