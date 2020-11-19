@@ -14,9 +14,9 @@ import android.os.Environment
 import android.util.Log
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.android.volley.Request
-import com.android.volley.RequestQueue
+import com.android.volley.*
 import com.android.volley.toolbox.StringRequest
 import com.android.volley.toolbox.Volley
 import com.googlecode.tesseract.android.TessBaseAPI
@@ -24,6 +24,7 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.util.PDFBoxResourceLoader
 import kotlinx.coroutines.*
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.*
 import java.time.LocalDateTime
@@ -144,7 +145,7 @@ class MainActivity : AppCompatActivity() {
             runPdfOCRLocal(filename)
         } else if (mode == 1) {
             // Cloud
-            runPdfOCRCloud()
+            postPdfToCloudRequest(filename)
         }
     }
 
@@ -204,9 +205,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     @SuppressLint("SetTextI18n")
-    private fun runPdfOCRCloud() {
-        val getOcrResultRequest = StringRequest(
-            Request.Method.GET, "$SERVICE_URL/0",
+    private fun postPdfToCloudRequest(filename: Uri) {
+        val postRequest = VolleyMultipartRequest(Request.Method.POST, SERVICE_URL,
+            { response ->
+                run {
+                    val jsonResult = JSONObject(String(response.data))
+                    val jobId = jsonResult.getString("job_id")
+
+                    getOcrResultFromCloudRequest(jobId)
+                }
+            },
+            { ocrResultTextView.text = "Failed sending the file to the cloud" },
+            contentResolver.openInputStream(filename) as FileInputStream?
+        )
+
+        requestQueue.add(postRequest)
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun getOcrResultFromCloudRequest(jobId: String) {
+        val getRequest = StringRequest(
+            Request.Method.GET, "$SERVICE_URL/$jobId",
             { response ->
                 run {
                     val jsonResult = JSONObject(response)
@@ -217,7 +236,8 @@ class MainActivity : AppCompatActivity() {
                             ocrResultTextView.text = jsonResult.getString("error")
                         }
                         status == "IN_PROGRESS" -> {
-                            ocrResultTextView.text = "IN PROGRESS XD"
+//                            delay(5000)
+                            getOcrResultFromCloudRequest(jobId)
                         }
                         status == "DONE" -> {
                             ocrResultTextView.text = jsonResult.getString("result")
@@ -225,9 +245,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             },
-            { ocrResultTextView.text = "Request to Cloud OCR failed" })
+            { ocrResultTextView.text = "Failed getting the OCR result from cloud" })
 
-        requestQueue.add(getOcrResultRequest)
+        requestQueue.add(getRequest)
     }
 
     private fun getOCRResult(filename: Uri): String {
