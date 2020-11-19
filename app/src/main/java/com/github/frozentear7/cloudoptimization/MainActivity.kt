@@ -45,7 +45,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var capacityValueTextView: TextView
     private lateinit var chargeCounterChangeValueTextView: TextView
     private lateinit var currentTimeTextView: TextView
-    private lateinit var takePhotoButton: Button
+    private lateinit var uploadPdfButton: Button
     private lateinit var ocrResultTextView: TextView
 
     private lateinit var mBatteryManager: BatteryManager
@@ -66,7 +66,7 @@ class MainActivity : AppCompatActivity() {
         chargeCounterChangeValueTextView =
             findViewById(R.id.chargeCounterChangeValueTextView)
         currentTimeTextView = findViewById(R.id.currentTimeTextView)
-        takePhotoButton = findViewById(R.id.takePhotoButton)
+        uploadPdfButton = findViewById(R.id.uploadPdfButton)
         ocrResultTextView = findViewById(R.id.ocrResultTextView)
 
         // Create tessdata trained data directories on the phone
@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
         // Setup energy counters
         printEnergyStatus()
 
-        takePhotoButton.setOnClickListener {
+        uploadPdfButton.setOnClickListener {
             intent = Intent(Intent.ACTION_GET_CONTENT)
             intent.type = "application/pdf"
             startActivityForResult(intent, FILE_MANAGER_INTENT_CODE)
@@ -134,9 +134,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processPdf(filename: Uri) {
-        val mode = 0
+        val mode = 1
 
         Log.v(TAG, "Starting OCR")
+
+        uploadPdfButton.isEnabled = false
+        ocrResultTextView.text = ""
 
         mainActivityScope.launch(Dispatchers.IO) {
             if (mode == 0) {
@@ -186,16 +189,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun runPdfOCRLocal(filename: Uri) {
-        ocrResultTextView.text = ""
+    private suspend fun runPdfOCRLocal(filename: Uri) {
         root = this.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
 
         PDFBoxResourceLoader.init(applicationContext)
 
         val ocrResult = getOCRResult(filename)
-        mainActivityScope.launch(Dispatchers.Main) {
-            renderOCRResult(ocrResult)
-        }
+        renderOCRResult(ocrResult)
     }
 
     @SuppressLint("SetTextI18n")
@@ -210,7 +210,10 @@ class MainActivity : AppCompatActivity() {
                     getOcrResultFromCloudRequest(jobId)
                 }
             },
-            { ocrResultTextView.text = "Failed sending the file to the cloud" },
+            {
+                ocrResultTextView.text = "Failed sending the file to the cloud"
+                uploadPdfButton.isEnabled = true
+            },
             contentResolver.openInputStream(filename) as FileInputStream?
         )
 
@@ -238,11 +241,15 @@ class MainActivity : AppCompatActivity() {
                         }
                         status == "DONE" -> {
                             ocrResultTextView.text = jsonResult.getString("result")
+                            uploadPdfButton.isEnabled = true
                         }
                     }
                 }
             },
-            { ocrResultTextView.text = "Failed getting the OCR result from cloud" })
+            {
+                ocrResultTextView.text = "Failed getting the OCR result from cloud"
+                uploadPdfButton.isEnabled = true
+            })
 
         requestQueue.add(getRequest)
     }
@@ -276,6 +283,7 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: IOException) {
             Log.e(TAG, "Exception thrown while rendering file", e)
+            uploadPdfButton.isEnabled = true
         }
 
         document.close()
@@ -334,7 +342,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderOCRResult(ocrResult: String) {
+    private suspend fun renderOCRResult(ocrResult: String) {
         var recognizedText = ocrResult
 
         // Put recognized text into the EditText content
@@ -344,8 +352,11 @@ class MainActivity : AppCompatActivity() {
         }
         recognizedText = recognizedText.trim { it <= ' ' }
         if (recognizedText.isNotEmpty()) {
-            ocrResultTextView.text = if (ocrResultTextView.text.toString().isEmpty()
-            ) recognizedText else ocrResultTextView.text.toString() + " " + recognizedText
+            withContext(Dispatchers.Main) {
+                ocrResultTextView.text = if (ocrResultTextView.text.toString().isEmpty()
+                ) recognizedText else ocrResultTextView.text.toString() + " " + recognizedText
+                uploadPdfButton.isEnabled = true
+            }
         }
     }
 }
