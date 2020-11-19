@@ -14,9 +14,9 @@ import android.os.Environment
 import android.util.Log
 import android.widget.Button
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.android.volley.*
+import com.android.volley.Request
+import com.android.volley.RequestQueue
 import com.android.volley.toolbox.StringRequest
 import com.android.volley.toolbox.Volley
 import com.googlecode.tesseract.android.TessBaseAPI
@@ -24,11 +24,9 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.util.PDFBoxResourceLoader
 import kotlinx.coroutines.*
-import org.json.JSONException
 import org.json.JSONObject
 import java.io.*
 import java.time.LocalDateTime
-import kotlin.coroutines.CoroutineContext
 
 
 private const val TAG = "MainActivity"
@@ -54,7 +52,7 @@ class MainActivity : AppCompatActivity() {
     var prevChargeCounter = -1L
     var totalEnergyUsed = 0L
 
-    private val uiContext: CoroutineContext = Dispatchers.Main
+    private val mainActivityScope = CoroutineScope(SupervisorJob())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,7 +121,7 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        when(requestCode) {
+        when (requestCode) {
             FILE_MANAGER_INTENT_CODE -> {
                 val filename = data?.data
 
@@ -136,55 +134,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processPdf(filename: Uri) {
-        val mode = 1
+        val mode = 0
 
         Log.v(TAG, "Starting OCR")
 
-        if (mode == 0) {
-            // Local
-            runPdfOCRLocal(filename)
-        } else if (mode == 1) {
-            // Cloud
-            postPdfToCloudRequest(filename)
+        mainActivityScope.launch(Dispatchers.IO) {
+            if (mode == 0) {
+                // Local
+                runPdfOCRLocal(filename)
+            } else if (mode == 1) {
+                // Cloud
+                postPdfToCloudRequest(filename)
+            }
         }
     }
 
     private fun printEnergyStatus() {
-        val scope = CoroutineScope(Dispatchers.Default)
-        scope.launch {
-            withContext(Dispatchers.Main) {
-                while (true) {
-                    val current = LocalDateTime.now()
-                    val chargeCounter: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-                    val currentNow: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-                    val currentAvg: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
-                    val capacity: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                    val energyCounter: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
+        mainActivityScope.launch(Dispatchers.Main) {
+            while (true) {
+                val current = LocalDateTime.now()
+                val chargeCounter: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+                val currentNow: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+                val currentAvg: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
+                val capacity: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                val energyCounter: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
 
-                    if (prevChargeCounter != -1L)
-                        totalEnergyUsed += prevChargeCounter - chargeCounter
-                    prevChargeCounter = chargeCounter
+                if (prevChargeCounter != -1L)
+                    totalEnergyUsed += prevChargeCounter - chargeCounter
+                prevChargeCounter = chargeCounter
 
-                    Log.i(TAG, "Current Date and Time is: $current")
-                    Log.i(TAG, "Remaining battery capacity = $chargeCounter uAh")
-                    Log.i(TAG, "Instantaneous battery current $currentNow uA")
-                    Log.i(TAG, "Average battery current = $currentAvg uA")
-                    Log.i(TAG, "Remaining battery capacity = $capacity %")
-                    Log.i(TAG, "Total energy used = $totalEnergyUsed uAh")
-                    Log.i(TAG, "Remaining energy = $energyCounter nWh")
+                Log.i(TAG, "Current Date and Time is: $current")
+                Log.i(TAG, "Remaining battery capacity = $chargeCounter uAh")
+                Log.i(TAG, "Instantaneous battery current $currentNow uA")
+                Log.i(TAG, "Average battery current = $currentAvg uA")
+                Log.i(TAG, "Remaining battery capacity = $capacity %")
+                Log.i(TAG, "Total energy used = $totalEnergyUsed uAh")
+                Log.i(TAG, "Remaining energy = $energyCounter nWh")
 
-                    currentTimeTextView.text = current.toString()
-                    chargeCounterValueTextView.text = chargeCounter.toString()
-                    capacityValueTextView.text = capacity.toString()
-                    chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
+                currentTimeTextView.text = current.toString()
+                chargeCounterValueTextView.text = chargeCounter.toString()
+                capacityValueTextView.text = capacity.toString()
+                chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
 
-                    delay(60000)
-                }
+                delay(60000)
             }
         }
     }
@@ -195,18 +192,16 @@ class MainActivity : AppCompatActivity() {
 
         PDFBoxResourceLoader.init(applicationContext)
 
-        val scope = CoroutineScope(Dispatchers.Default)
-        scope.launch {
-            withContext(Dispatchers.Main) {
-                val ocrResult = getOCRResult(filename)
-                renderOCRResult(ocrResult)
-            }
+        val ocrResult = getOCRResult(filename)
+        mainActivityScope.launch(Dispatchers.Main) {
+            renderOCRResult(ocrResult)
         }
     }
 
     @SuppressLint("SetTextI18n")
     private fun postPdfToCloudRequest(filename: Uri) {
-        val postRequest = VolleyMultipartRequest(Request.Method.POST, SERVICE_URL,
+        val postRequest = VolleyMultipartRequest(
+            Request.Method.POST, SERVICE_URL,
             { response ->
                 run {
                     val jsonResult = JSONObject(String(response.data))
@@ -236,8 +231,10 @@ class MainActivity : AppCompatActivity() {
                             ocrResultTextView.text = jsonResult.getString("error")
                         }
                         status == "IN_PROGRESS" -> {
-//                            delay(5000)
-                            getOcrResultFromCloudRequest(jobId)
+                            mainActivityScope.launch(Dispatchers.IO) {
+                                delay(5000)
+                                getOcrResultFromCloudRequest(jobId)
+                            }
                         }
                         status == "DONE" -> {
                             ocrResultTextView.text = jsonResult.getString("result")
@@ -264,7 +261,7 @@ class MainActivity : AppCompatActivity() {
         try {
             // Render the image to an RGB Bitmap
             for (i in 0 until document.numberOfPages) {
-                pageImage = renderer.renderImage(i, 1f, Bitmap.Config.RGB_565)
+                pageImage = renderer.renderImage(i, 10f, Bitmap.Config.RGB_565)
 
                 // Save the render result to an image
                 val path = root.absolutePath + "/render$i.jpg"
