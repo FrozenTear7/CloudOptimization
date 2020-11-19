@@ -1,33 +1,44 @@
 package com.github.frozentear7.cloudoptimization
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.android.volley.Request
+import com.android.volley.RequestQueue
+import com.android.volley.toolbox.StringRequest
+import com.android.volley.toolbox.Volley
 import com.googlecode.tesseract.android.TessBaseAPI
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.util.PDFBoxResourceLoader
 import kotlinx.coroutines.*
+import org.json.JSONObject
 import java.io.*
 import java.time.LocalDateTime
+import kotlin.coroutines.CoroutineContext
 
 
 private const val TAG = "MainActivity"
 private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "/Tess"
 private const val lang = "eng"
 private const val pdfFilename = "Raport projektu - CEA_Bus_Klemens_Mendroch.pdf"
+private const val FILE_MANAGER_INTENT_CODE = 11
+private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
 
 class MainActivity : AppCompatActivity() {
+    private lateinit var requestQueue: RequestQueue
     private lateinit var pageImage: Bitmap
     private lateinit var root: File
 
@@ -36,16 +47,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chargeCounterChangeValueTextView: TextView
     private lateinit var currentTimeTextView: TextView
     private lateinit var takePhotoButton: Button
-    private lateinit var ocrResultEditText: EditText
+    private lateinit var ocrResultTextView: TextView
 
     private lateinit var mBatteryManager: BatteryManager
     var prevChargeCounter = -1L
     var totalEnergyUsed = 0L
 
+    private val uiContext: CoroutineContext = Dispatchers.Main
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        requestQueue = Volley.newRequestQueue(this)
         mBatteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
 
         chargeCounterValueTextView = findViewById(R.id.chargeCounterValueTextView)
@@ -54,7 +68,7 @@ class MainActivity : AppCompatActivity() {
             findViewById(R.id.chargeCounterChangeValueTextView)
         currentTimeTextView = findViewById(R.id.currentTimeTextView)
         takePhotoButton = findViewById(R.id.takePhotoButton)
-        ocrResultEditText = findViewById(R.id.ocrResultEditText)
+        ocrResultTextView = findViewById(R.id.ocrResultTextView)
 
         // Create tessdata trained data directories on the phone
         val paths = arrayOf(DATA_PATH, "$DATA_PATH/tessdata/")
@@ -98,8 +112,39 @@ class MainActivity : AppCompatActivity() {
         printEnergyStatus()
 
         takePhotoButton.setOnClickListener {
-            Log.v(TAG, "Starting OCR")
-            runPdfOCR()
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.type = "application/pdf"
+            startActivityForResult(intent, FILE_MANAGER_INTENT_CODE)
+        }
+    }
+
+    @SuppressLint("SetTextI18n")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        when(requestCode) {
+            FILE_MANAGER_INTENT_CODE -> {
+                val filename = data?.data
+
+                if (filename != null)
+                    processPdf(filename)
+                else
+                    ocrResultTextView.text = "Provide a valid PDF file"
+            }
+        }
+    }
+
+    private fun processPdf(filename: Uri) {
+        val mode = 1
+
+        Log.v(TAG, "Starting OCR")
+
+        if (mode == 0) {
+            // Local
+            runPdfOCRLocal(filename)
+        } else if (mode == 1) {
+            // Cloud
+            runPdfOCRCloud()
         }
     }
 
@@ -137,26 +182,63 @@ class MainActivity : AppCompatActivity() {
                     capacityValueTextView.text = capacity.toString()
                     chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
 
-                    delay(10000)
+                    delay(60000)
                 }
             }
         }
     }
 
-    private fun runPdfOCR() {
-        ocrResultEditText.setText("")
-        root =
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    private fun runPdfOCRLocal(filename: Uri) {
+        ocrResultTextView.text = ""
+        root = this.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
+
+        PDFBoxResourceLoader.init(applicationContext)
+
+        val scope = CoroutineScope(Dispatchers.Default)
+        scope.launch {
+            withContext(Dispatchers.Main) {
+                val ocrResult = getOCRResult(filename)
+                renderOCRResult(ocrResult)
+            }
+        }
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun runPdfOCRCloud() {
+        val getOcrResultRequest = StringRequest(
+            Request.Method.GET, "$SERVICE_URL/0",
+            { response ->
+                run {
+                    val jsonResult = JSONObject(response)
+                    val status = jsonResult.getString("status")
+
+                    when {
+                        jsonResult.has("error") -> {
+                            ocrResultTextView.text = jsonResult.getString("error")
+                        }
+                        status == "IN_PROGRESS" -> {
+                            ocrResultTextView.text = "IN PROGRESS XD"
+                        }
+                        status == "DONE" -> {
+                            ocrResultTextView.text = jsonResult.getString("result")
+                        }
+                    }
+                }
+            },
+            { ocrResultTextView.text = "Request to Cloud OCR failed" })
+
+        requestQueue.add(getOcrResultRequest)
+    }
+
+    private fun getOCRResult(filename: Uri): String {
+        var ocrResult = ""
 
         val baseApi = TessBaseAPI()
         baseApi.setDebug(true)
         baseApi.init(DATA_PATH, lang)
 
-        PDFBoxResourceLoader.init(applicationContext)
-
-        var ocrResult = ""
-
-        val document: PDDocument = PDDocument.load(assets.open(pdfFilename))
+//        val document: PDDocument = PDDocument.load(assets.open(pdfFilename)) // Local PDF in the assets directory
+        val document: PDDocument = PDDocument.load(contentResolver.openInputStream(filename))
         val renderer = PDFRenderer(document)
 
         try {
@@ -179,8 +261,10 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "Exception thrown while rendering file", e)
         }
 
-        renderOCRResult(ocrResult)
+        document.close()
         baseApi.end()
+
+        return ocrResult
     }
 
     private fun saveResultImage(pageImage: Bitmap, path: String) {
@@ -243,12 +327,8 @@ class MainActivity : AppCompatActivity() {
         }
         recognizedText = recognizedText.trim { it <= ' ' }
         if (recognizedText.isNotEmpty()) {
-            ocrResultEditText.setText(
-                if (ocrResultEditText.text.toString()
-                        .isEmpty()
-                ) recognizedText else ocrResultEditText.text.toString() + " " + recognizedText
-            )
-            ocrResultEditText.setSelection(ocrResultEditText.text.toString().length)
+            ocrResultTextView.text = if (ocrResultTextView.text.toString().isEmpty()
+            ) recognizedText else ocrResultTextView.text.toString() + " " + recognizedText
         }
     }
 }
