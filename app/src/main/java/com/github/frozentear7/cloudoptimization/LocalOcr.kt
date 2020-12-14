@@ -92,7 +92,6 @@ class LocalOcr(applicationContext: Context) {
         }
 
         document.close()
-        baseApi.end()
 
         if (lang.equals("eng", ignoreCase = true)) {
             ocrResult = ocrResult.replace("[^a-zA-Z0-9]+".toRegex(), " ")

@@ -17,6 +17,7 @@ import com.android.volley.toolbox.StringRequest
 import com.android.volley.toolbox.Volley
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.*
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.*
 import java.math.RoundingMode
@@ -32,8 +33,9 @@ private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "
 private const val lang = "eng"
 private const val FILE_MANAGER_INTENT_CODE = 11
 private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
-private const val repeatJobs = 1
-private const val pdfFilename = "I2RM_4_PMendroch.pdf"
+private const val repeatJobs = 3
+//private const val pdfFilename = "I2RM_4_PMendroch.pdf"
+private const val pdfFilename = "content://com.android.providers.downloads.documents/document/msf%3A233693"
 
 class MainActivity : AppCompatActivity() {
     private lateinit var requestQueue: RequestQueue
@@ -58,6 +60,9 @@ class MainActivity : AppCompatActivity() {
     private var numberOfPages = 0
 
     private val df = DecimalFormat("#.##")
+
+    private var continueCloud = true
+    private var cloudJobsDone = 0
 
     // File size utils
     private val File.sizeInMb get() = if (!exists()) 0.0 else length().toDouble() / (1024 * 1024)
@@ -84,6 +89,8 @@ class MainActivity : AppCompatActivity() {
         // Setup energy counters
         printEnergyStatus()
 
+        df.roundingMode = RoundingMode.CEILING
+
         uploadPdfButton.setOnClickListener {
             intent = Intent(Intent.ACTION_GET_CONTENT)
             intent.type = "application/pdf"
@@ -91,8 +98,6 @@ class MainActivity : AppCompatActivity() {
         }
 
 //        processPdf(Uri.fromFile(File("test")))
-
-        df.roundingMode = RoundingMode.CEILING
     }
 
     private fun createTessdataDir() {
@@ -168,17 +173,16 @@ class MainActivity : AppCompatActivity() {
         startBatteryCapacity =
             mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
         val document: PDDocument = PDDocument.load(contentResolver.openInputStream(filename) as FileInputStream)
+//        val document: PDDocument = PDDocument.load(contentResolver.openInputStream(Uri.parse(pdfFilename)) as FileInputStream)
         numberOfPages = document.numberOfPages
 
-        mainActivityScope.launch(Dispatchers.IO) {
-            processMode = 0
-            if (processMode == 0) {
-                // Local
-                runPdfOCRLocal(filename)
-            } else if (processMode == 1) {
-                // Cloud
-                postPdfToCloudRequest(filename)
-            }
+        processMode = 1
+        if (processMode == 0) {
+            // Local
+            runPdfOCRLocal(filename)
+        } else if (processMode == 1) {
+            // Cloud
+            postPdfToCloudRequest(filename)
         }
     }
 
@@ -209,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun logProcessdata(filename: Uri, mode: String) {
+    private fun logProcessData(filename: Uri, mode: String) {
         endTime = Date()
         endBatteryCapacity =
             mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
@@ -220,58 +224,86 @@ class MainActivity : AppCompatActivity() {
 
         Log.v(ML_TAG, "$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages")
 
-        withContext(Dispatchers.Main) {
-            uploadPdfButton.isEnabled = true
+        val root = applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
+        val trainingDataFile = File(root, "trainingData.txt")
+
+        try {
+            PrintWriter(trainingDataFile).use { out -> out.println("$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages") }
+        } catch (e: Exception) {
+            Log.v(TAG, "Exception while writing data logs: $e")
         }
     }
 
-    private suspend fun runPdfOCRLocal(filename: Uri) {
-        val localOcrService = LocalOcr(applicationContext)
+    private fun runPdfOCRLocal(filename: Uri) {
+        mainActivityScope.launch(Dispatchers.IO) {
+            val localOcrService = LocalOcr(applicationContext)
 
-        for (i in 1..repeatJobs) {
-            ocrResultTextView.text = ""
-            Log.i(TAG, "Running job $i out of $repeatJobs")
+            for (i in 1..repeatJobs) {
+                ocrResultTextView.text = ""
+                Log.i(TAG, "Running job $i out of $repeatJobs")
 
-            try {
+                try {
 //                val ocrResult = localOcrService.runOCR(assets.open(pdfFilename) as FileInputStream)
-                val ocrResult = localOcrService.runOCR(contentResolver.openInputStream(filename) as FileInputStream)
+                    val ocrResult =
+                        localOcrService.runOCR(contentResolver.openInputStream(filename) as FileInputStream)
 //
-                withContext(Dispatchers.Main) {
-                    ocrResultTextView.text = ocrResult
+                    withContext(Dispatchers.Main) {
+                        ocrResultTextView.text = ocrResult
+                    }
+                } catch (e: IOException) {
+                    Log.e(TAG, "Exception thrown while rendering file", e)
+
+                    withContext(Dispatchers.Main) {
+                        uploadPdfButton.isEnabled = true
+                    }
                 }
-            } catch (e: IOException) {
-                Log.e(TAG, "Exception thrown while rendering file", e)
+            }
+
+            logProcessData(filename, "local")
+            withContext(Dispatchers.Main) {
                 uploadPdfButton.isEnabled = true
             }
         }
-
-        logProcessdata(filename, "local")
     }
 
     @SuppressLint("SetTextI18n")
     private fun postPdfToCloudRequest(filename: Uri) {
-        for (i in 1..repeatJobs) {
-            ocrResultTextView.text = ""
-            Log.i(TAG, "Running job $i out of $repeatJobs")
-            val postRequest = VolleyMultipartRequest(
-                Request.Method.POST, SERVICE_URL,
-                { response ->
-                    run {
-                        val jsonResult = JSONObject(String(response.data))
-                        val jobId = jsonResult.getString("job_id")
+        mainActivityScope.launch(Dispatchers.IO) {
+            for (i in 1..repeatJobs) {
+                if(continueCloud) {
+                    continueCloud = false
+                    ocrResultTextView.text = ""
+                    Log.i(TAG, "Running job $i out of $repeatJobs")
+                    val postRequest = VolleyMultipartRequest(
+                        Request.Method.POST, SERVICE_URL,
+                        { response ->
+                            run {
+                                val jsonResult = JSONObject(String(response.data))
+                                val jobId = jsonResult.getString("job_id")
 
-                        getOcrResultFromCloudRequest(jobId, filename)
-                    }
-                },
-                {
-                    ocrResultTextView.text = "Failed sending the file to the cloud"
-                    uploadPdfButton.isEnabled = true
-                },
+                                getOcrResultFromCloudRequest(jobId, filename)
+                            }
+                        },
+                        {
+                            ocrResultTextView.text = "Failed sending the file to the cloud"
+                            uploadPdfButton.isEnabled = true
+                        },
 //                assets.open(pdfFilename) as FileInputStream
-                contentResolver.openInputStream(filename) as FileInputStream?
-            )
+                        contentResolver.openInputStream(filename) as FileInputStream?
+                    )
 
-            requestQueue.add(postRequest)
+                    requestQueue.add(postRequest)
+                }
+
+                do {
+                    delay(1000)
+                } while(cloudJobsDone != repeatJobs)
+
+                logProcessData(filename, "cloud")
+                withContext(Dispatchers.Main) {
+                    uploadPdfButton.isEnabled = true
+                }
+            }
         }
     }
 
@@ -281,26 +313,30 @@ class MainActivity : AppCompatActivity() {
             Request.Method.GET, "$SERVICE_URL/$jobId",
             { response ->
                 run {
-                    val jsonResult = JSONObject(response)
-                    val status = jsonResult.getString("status")
+                    try {
+                        val jsonResult = JSONObject(response)
+                        val status = jsonResult.getString("status")
 
-                    when {
-                        jsonResult.has("error") -> {
-                            ocrResultTextView.text = jsonResult.getString("error")
-                        }
-                        status == "IN_PROGRESS" -> {
-                            mainActivityScope.launch(Dispatchers.IO) {
-                                delay(5000)
-                                getOcrResultFromCloudRequest(jobId, filename)
+                        when {
+                            jsonResult.has("error") -> {
+                                ocrResultTextView.text = jsonResult.getString("error")
+                            }
+                            status == "IN_PROGRESS" -> {
+                                mainActivityScope.launch(Dispatchers.IO) {
+                                    delay(5000)
+                                    getOcrResultFromCloudRequest(jobId, filename)
+                                }
+                            }
+                            status == "DONE" -> {
+                                ocrResultTextView.text = jsonResult.getString("result")
+                                continueCloud = true
+                                cloudJobsDone += 1
                             }
                         }
-                        status == "DONE" -> {
-                            ocrResultTextView.text = jsonResult.getString("result")
-
-                            mainActivityScope.launch(Dispatchers.Main) {
-                                logProcessdata(filename, "cloud")
-                            }
-                        }
+                    } catch (e: JSONException) {
+                        Log.e(TAG, "Exception thrown while parsing a response", e)
+                        ocrResultTextView.text = "Failed getting the OCR result from cloud"
+                        uploadPdfButton.isEnabled = true
                     }
                 }
             },
