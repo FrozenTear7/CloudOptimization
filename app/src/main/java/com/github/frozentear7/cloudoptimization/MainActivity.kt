@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.util.Log
 import android.widget.Button
 import android.widget.TextView
@@ -19,7 +20,10 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.*
 import org.json.JSONException
 import org.json.JSONObject
-import java.io.*
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
 import java.math.RoundingMode
 import java.text.DecimalFormat
 import java.time.LocalDateTime
@@ -29,13 +33,14 @@ import kotlin.random.Random.Default.nextInt
 
 private const val TAG = "MainActivity"
 private const val ML_TAG = "TrainingData"
-private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "/Tess"
-private const val lang = "eng"
+private var LOGS_PATH = Environment.getExternalStorageDirectory().toString() + "/TrainingDataLogs"
 private const val FILE_MANAGER_INTENT_CODE = 11
 private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
-private const val repeatJobs = 3
+private const val repeatJobs = 2
+
 //private const val pdfFilename = "I2RM_4_PMendroch.pdf"
-private const val pdfFilename = "content://com.android.providers.downloads.documents/document/msf%3A233693"
+//private const val pdfFilename =
+//    "content://com.android.providers.downloads.documents/document/msf%3A233693"
 
 class MainActivity : AppCompatActivity() {
     private lateinit var requestQueue: RequestQueue
@@ -61,11 +66,7 @@ class MainActivity : AppCompatActivity() {
 
     private val df = DecimalFormat("#.##")
 
-    private var continueCloud = true
     private var cloudJobsDone = 0
-
-    // File size utils
-    private val File.sizeInMb get() = if (!exists()) 0.0 else length().toDouble() / (1024 * 1024)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,10 +83,6 @@ class MainActivity : AppCompatActivity() {
         uploadPdfButton = findViewById(R.id.uploadPdfButton)
         ocrResultTextView = findViewById(R.id.ocrResultTextView)
 
-        // Create tessdata trained data directories on the phone
-        createTessdataDir()
-        copyTessdata()
-
         // Setup energy counters
         printEnergyStatus()
 
@@ -95,49 +92,6 @@ class MainActivity : AppCompatActivity() {
             intent = Intent(Intent.ACTION_GET_CONTENT)
             intent.type = "application/pdf"
             startActivityForResult(intent, FILE_MANAGER_INTENT_CODE)
-        }
-
-//        processPdf(Uri.fromFile(File("test")))
-    }
-
-    private fun createTessdataDir() {
-        val paths = arrayOf(DATA_PATH, "$DATA_PATH/tessdata/")
-
-        for (path in paths) {
-            val dir = File(path)
-            if (!dir.exists()) {
-                if (!dir.mkdirs()) {
-                    Log.v(TAG, "ERROR: Creation of directory $path on sdcard failed")
-                    return
-                } else {
-                    Log.v(TAG, "Created directory $path on sdcard")
-                }
-            }
-        }
-    }
-
-    private fun copyTessdata() {
-        if (!File("$DATA_PATH/tessdata/$lang.traineddata").exists()) {
-            try {
-                val assetManager = assets
-                val `in`: InputStream = assetManager.open("tessdata/$lang.traineddata")
-                val out: OutputStream = FileOutputStream(
-                    DATA_PATH
-                            + "tessdata/" + lang + ".traineddata"
-                )
-
-                // Transfer bytes from in to out
-                val buf = ByteArray(1024)
-                var len: Int
-                while (`in`.read(buf).also { len = it } > 0) {
-                    out.write(buf, 0, len)
-                }
-                `in`.close()
-                out.close()
-                Log.v(TAG, "Copied $lang traineddata")
-            } catch (e: IOException) {
-                Log.e(TAG, "Was unable to copy $lang traineddata $e")
-            }
         }
     }
 
@@ -150,7 +104,9 @@ class MainActivity : AppCompatActivity() {
                 val filename = data?.data
 
                 if (filename != null)
+//                    while (true) {
                     processPdf(filename)
+//                    }
                 else
                     ocrResultTextView.text = "Provide a valid PDF file"
             }
@@ -172,11 +128,13 @@ class MainActivity : AppCompatActivity() {
         startTime = Date()
         startBatteryCapacity =
             mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-        val document: PDDocument = PDDocument.load(contentResolver.openInputStream(filename) as FileInputStream)
+        val document: PDDocument =
+            PDDocument.load(contentResolver.openInputStream(filename) as FileInputStream)
 //        val document: PDDocument = PDDocument.load(contentResolver.openInputStream(Uri.parse(pdfFilename)) as FileInputStream)
         numberOfPages = document.numberOfPages
+        document.close()
 
-        processMode = 1
+        processMode = 0
         if (processMode == 0) {
             // Local
             runPdfOCRLocal(filename)
@@ -217,18 +175,27 @@ class MainActivity : AppCompatActivity() {
         endTime = Date()
         endBatteryCapacity =
             mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-        val totalTime = df.format((endTime.time - startTime.time))
+        val totalTime = df.format((endTime.time - startTime.time) / 1000.0)
         val batteryChange = endBatteryCapacity - startBatteryCapacity
-        val pdfFile = File(filename.path!!)
-        val fileSize = pdfFile.sizeInMb * repeatJobs
 
-        Log.v(ML_TAG, "$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages")
+        val fileSize = filename.let { contentResolver.query(it, null, null, null, null) }
+            ?.use { cursor ->
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                cursor.moveToFirst()
+                df.format(cursor.getLong(sizeIndex) / (1024.0 * 1024.0))
+            }
 
-        val root = applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
-        val trainingDataFile = File(root, "trainingData.txt")
+        Log.v(
+            ML_TAG,
+            "mode: $mode, totalTime: $totalTime, fileSize: $fileSize, batteryChange: $batteryChange, numberOfPages: $numberOfPages, repeatJobs: $repeatJobs"
+        )
+
+        val trainingDataFile = File(LOGS_PATH, "trainingData.txt")
 
         try {
-            PrintWriter(trainingDataFile).use { out -> out.println("$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages") }
+            FileOutputStream(trainingDataFile, true).bufferedWriter().use { writer ->
+                writer.append("$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages, $repeatJobs\n")
+            }
         } catch (e: Exception) {
             Log.v(TAG, "Exception while writing data logs: $e")
         }
@@ -269,41 +236,27 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     private fun postPdfToCloudRequest(filename: Uri) {
         mainActivityScope.launch(Dispatchers.IO) {
-            for (i in 1..repeatJobs) {
-                if(continueCloud) {
-                    continueCloud = false
-                    ocrResultTextView.text = ""
-                    Log.i(TAG, "Running job $i out of $repeatJobs")
-                    val postRequest = VolleyMultipartRequest(
-                        Request.Method.POST, SERVICE_URL,
-                        { response ->
-                            run {
-                                val jsonResult = JSONObject(String(response.data))
-                                val jobId = jsonResult.getString("job_id")
+            ocrResultTextView.text = ""
+            Log.i(TAG, "Running job $cloudJobsDone out of $repeatJobs")
+            val postRequest = VolleyMultipartRequest(
+                Request.Method.POST, SERVICE_URL,
+                { response ->
+                    run {
+                        val jsonResult = JSONObject(String(response.data))
+                        val jobId = jsonResult.getString("job_id")
 
-                                getOcrResultFromCloudRequest(jobId, filename)
-                            }
-                        },
-                        {
-                            ocrResultTextView.text = "Failed sending the file to the cloud"
-                            uploadPdfButton.isEnabled = true
-                        },
-//                assets.open(pdfFilename) as FileInputStream
-                        contentResolver.openInputStream(filename) as FileInputStream?
-                    )
-
-                    requestQueue.add(postRequest)
-                }
-
-                do {
-                    delay(1000)
-                } while(cloudJobsDone != repeatJobs)
-
-                logProcessData(filename, "cloud")
-                withContext(Dispatchers.Main) {
+                        getOcrResultFromCloudRequest(jobId, filename)
+                    }
+                },
+                {
+                    ocrResultTextView.text = "Failed sending the file to the cloud"
                     uploadPdfButton.isEnabled = true
-                }
-            }
+                },
+//                assets.open(pdfFilename) as FileInputStream
+                contentResolver.openInputStream(filename) as FileInputStream?
+            )
+
+            requestQueue.add(postRequest)
         }
     }
 
@@ -329,8 +282,14 @@ class MainActivity : AppCompatActivity() {
                             }
                             status == "DONE" -> {
                                 ocrResultTextView.text = jsonResult.getString("result")
-                                continueCloud = true
                                 cloudJobsDone += 1
+
+                                if (cloudJobsDone == repeatJobs) {
+                                    logProcessData(filename, "cloud")
+                                    uploadPdfButton.isEnabled = true
+                                } else {
+                                    postPdfToCloudRequest(filename)
+                                }
                             }
                         }
                     } catch (e: JSONException) {

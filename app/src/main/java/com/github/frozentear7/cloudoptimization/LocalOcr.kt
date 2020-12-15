@@ -19,7 +19,6 @@ private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "
 private const val lang = "eng"
 
 class LocalOcr(applicationContext: Context) {
-    private val baseApi = TessBaseAPI()
     private lateinit var pageImage: Bitmap
     private var root: File
 
@@ -71,6 +70,10 @@ class LocalOcr(applicationContext: Context) {
     }
 
     fun runOCR(pdfFile: FileInputStream): String {
+        val baseApi = TessBaseAPI()
+        baseApi.setDebug(true)
+        baseApi.init(DATA_PATH, lang)
+
         var ocrResult = ""
 
         val document: PDDocument = PDDocument.load(pdfFile)
@@ -92,6 +95,8 @@ class LocalOcr(applicationContext: Context) {
         }
 
         document.close()
+        baseApi.end()
+        pdfFile.close()
 
         if (lang.equals("eng", ignoreCase = true)) {
             ocrResult = ocrResult.replace("[^a-zA-Z0-9]+".toRegex(), " ")
@@ -102,9 +107,6 @@ class LocalOcr(applicationContext: Context) {
     }
 
     init {
-        val baseApi = TessBaseAPI()
-        baseApi.setDebug(true)
-        baseApi.init(DATA_PATH, lang)
         PDFBoxResourceLoader.init(applicationContext)
         root = applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)!!
     }
