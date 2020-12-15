@@ -36,7 +36,7 @@ private const val ML_TAG = "TrainingData"
 private var LOGS_PATH = Environment.getExternalStorageDirectory().toString() + "/TrainingDataLogs"
 private const val FILE_MANAGER_INTENT_CODE = 11
 private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
-private const val repeatJobs = 20
+private const val repeatJobs = 50
 
 //private const val pdfFilename = "I2RM_4_PMendroch.pdf"
 //private const val pdfFilename =
@@ -132,7 +132,6 @@ class MainActivity : AppCompatActivity() {
         numberOfPages = document.numberOfPages
         document.close()
 
-        processMode = 0
         if (processMode == 0) {
             // Local
             runPdfOCRLocal(filename)
@@ -227,9 +226,9 @@ class MainActivity : AppCompatActivity() {
             logProcessData(filename, "local")
             withContext(Dispatchers.Main) {
                 uploadPdfButton.isEnabled = true
+                // Continue the loop for testing
+                processPdf(filename)
             }
-            // Continue the loop for testing
-            processPdf(filename)
         }
     }
 
