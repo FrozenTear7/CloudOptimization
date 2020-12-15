@@ -1,240 +1,311 @@
 package com.github.frozentear7.cloudoptimization
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import android.media.ExifInterface
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
-import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Log
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.FileProvider
-import com.googlecode.tesseract.android.TessBaseAPI
+import com.android.volley.Request
+import com.android.volley.RequestQueue
+import com.android.volley.toolbox.StringRequest
+import com.android.volley.toolbox.Volley
+import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.*
-import java.io.*
+import org.json.JSONException
+import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
+import java.math.RoundingMode
+import java.text.DecimalFormat
 import java.time.LocalDateTime
+import java.util.*
+import kotlin.random.Random.Default.nextInt
 
 
 private const val TAG = "MainActivity"
-private var DATA_PATH = Environment.getExternalStorageDirectory().toString() + "/Tess"
-private const val lang = "eng"
-private const val PHOTO_TAKEN: String = "photo_taken"
+private const val ML_TAG = "TrainingData"
+private var LOGS_PATH = Environment.getExternalStorageDirectory().toString() + "/TrainingDataLogs"
+private const val FILE_MANAGER_INTENT_CODE = 11
+private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
+private const val repeatJobs = 20
+
+//private const val pdfFilename = "I2RM_4_PMendroch.pdf"
+//private const val pdfFilename =
+//    "content://com.android.providers.downloads.documents/document/msf%3A233693"
 
 class MainActivity : AppCompatActivity() {
-    private var path: String = "$DATA_PATH/ocr.jpg";
-    private var photoTaken: Boolean = false
+    private lateinit var requestQueue: RequestQueue
 
-    private lateinit var ocrResultEditText: EditText
+    private lateinit var chargeCounterValueTextView: TextView
+    private lateinit var capacityValueTextView: TextView
+    private lateinit var chargeCounterChangeValueTextView: TextView
+    private lateinit var currentTimeTextView: TextView
+    private lateinit var uploadPdfButton: Button
+    private lateinit var ocrResultTextView: TextView
+
+    private lateinit var mBatteryManager: BatteryManager
+    private var prevChargeCounter = -1L
+    private var totalEnergyUsed = 0L
+
+    private val mainActivityScope = CoroutineScope(SupervisorJob())
+
+    private var startTime = Date()
+    private var endTime = Date()
+    private var startBatteryCapacity = 0L
+    private var endBatteryCapacity = 0L
+    private var numberOfPages = 0
+
+    private val df = DecimalFormat("#.##")
+
+    private var cloudJobsDone = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val chargeCounterValueTextView = findViewById<TextView>(R.id.chargeCounterValueTextView)
-        val capacityValueTextView = findViewById<TextView>(R.id.capacityValueTextView)
-        val chargeCounterChangeValueTextView =
-            findViewById<TextView>(R.id.chargeCounterChangeValueTextView)
-        val currentTimeTextView = findViewById<TextView>(R.id.currentTimeTextView)
-        val takePhotoButton = findViewById<Button>(R.id.takePhotoButton)
+        requestQueue = Volley.newRequestQueue(this)
+        mBatteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
 
-        ocrResultEditText = findViewById(R.id.ocrResultEditText)
+        chargeCounterValueTextView = findViewById(R.id.chargeCounterValueTextView)
+        capacityValueTextView = findViewById(R.id.capacityValueTextView)
+        chargeCounterChangeValueTextView =
+            findViewById(R.id.chargeCounterChangeValueTextView)
+        currentTimeTextView = findViewById(R.id.currentTimeTextView)
+        uploadPdfButton = findViewById(R.id.uploadPdfButton)
+        ocrResultTextView = findViewById(R.id.ocrResultTextView)
 
-        val mBatteryManager: BatteryManager =
-            getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val scope = CoroutineScope(Dispatchers.Default)
-        var prevChargeCounter = -1L
-        var totalEnergyUsed = 0L
+        // Setup energy counters
+        printEnergyStatus()
 
-        val paths = arrayOf(DATA_PATH, "$DATA_PATH/tessdata/")
+        df.roundingMode = RoundingMode.CEILING
 
-        for (path in paths) {
-            val dir = File(path)
-            if (!dir.exists()) {
-                if (!dir.mkdirs()) {
-                    Log.v(TAG, "ERROR: Creation of directory $path on sdcard failed")
-                    return
-                } else {
-                    Log.v(TAG, "Created directory $path on sdcard")
-                }
-            }
-        }
-
-        if (!File("$DATA_PATH/tessdata/$lang.traineddata").exists()) {
-            try {
-                val assetManager = assets
-                val `in`: InputStream = assetManager.open("tessdata/$lang.traineddata")
-                //GZIPInputStream gin = new GZIPInputStream(in);
-                val out: OutputStream = FileOutputStream(
-                    DATA_PATH
-                            + "tessdata/" + lang + ".traineddata"
-                )
-
-                // Transfer bytes from in to out
-                val buf = ByteArray(1024)
-                var len: Int
-                //while ((lenf = gin.read(buff)) > 0) {
-                while (`in`.read(buf).also { len = it } > 0) {
-                    out.write(buf, 0, len)
-                }
-                `in`.close()
-                //gin.close();
-                out.close()
-                Log.v(TAG, "Copied $lang traineddata")
-            } catch (e: IOException) {
-                Log.e(TAG, "Was unable to copy $lang traineddata $e")
-            }
-        }
-
-        scope.launch {
-            withContext(Dispatchers.Main) {
-                while (true) {
-                    val current = LocalDateTime.now()
-                    println("Current Date and Time is: $current")
-                    currentTimeTextView.text = current.toString()
-
-                    val chargeCounter: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-                    Log.i(TAG, "Remaining battery capacity = $chargeCounter uAh")
-                    chargeCounterValueTextView.text = chargeCounter.toString()
-
-//                    val currentNow: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-//                    Log.i(TAG, "Instantaneous battery current $currentNow uA")
-
-//                    val currentAvg: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE)
-//                    Log.i(TAG, "Average battery current = $currentAvg uA")
-
-                    val capacity: Long =
-                        mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                    Log.i(TAG, "Remaining battery capacity = $capacity %")
-                    capacityValueTextView.text = capacity.toString()
-
-                    if (prevChargeCounter != -1L)
-                        totalEnergyUsed += prevChargeCounter - chargeCounter
-                    prevChargeCounter = chargeCounter
-
-                    Log.i(TAG, "Total energy used = $totalEnergyUsed uAh")
-                    chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
-
-//                    val energyCounter: Long = mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER)
-//                    Log.i(TAG, "Remaining energy = $energyCounter nWh")
-
-                    delay(10000)
-                }
-            }
-        }
-
-        takePhotoButton.setOnClickListener {
-            Log.v(TAG, "Starting Camera app")
-            startCameraActivity()
+        uploadPdfButton.setOnClickListener {
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.type = "application/pdf"
+            startActivityForResult(intent, FILE_MANAGER_INTENT_CODE)
         }
     }
 
-    private fun startCameraActivity() {
-        val file = File(path)
-//        val outputFileUri = Uri.fromFile(file)
-        val outputFileUri = FileProvider.getUriForFile(
-            applicationContext,
-            BuildConfig.APPLICATION_ID + ".provider",
-            file
-        )
-        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputFileUri)
-        startActivityForResult(intent, 0)
-    }
-
+    @SuppressLint("SetTextI18n")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        Log.i(TAG, "resultCode: $resultCode")
-        if (resultCode == -1) {
-            onPhotoTaken()
-        } else {
-            Log.v(TAG, "User cancelled")
+
+        when (requestCode) {
+            FILE_MANAGER_INTENT_CODE -> {
+                val filename = data?.data
+
+                if (filename != null)
+                    processPdf(filename)
+                else
+                    ocrResultTextView.text = "Provide a valid PDF file"
+            }
         }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putBoolean(PHOTO_TAKEN, photoTaken)
-    }
+    private fun processPdf(filename: Uri) {
+        // Initially just randomize the location of service
+        var processMode = nextInt(2)
 
-    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
-        Log.i(TAG, "onRestoreInstanceState()")
-        if (savedInstanceState.getBoolean(PHOTO_TAKEN)) {
-            onPhotoTaken()
+        if (processMode == 0)
+            Log.v(TAG, "Starting OCR locally")
+        else if (processMode == 1)
+            Log.v(TAG, "Starting OCR in cloud")
+
+        uploadPdfButton.isEnabled = false
+
+        // Start timer
+        startTime = Date()
+        startBatteryCapacity =
+            mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+        val document: PDDocument =
+            PDDocument.load(contentResolver.openInputStream(filename) as FileInputStream)
+//        val document: PDDocument = PDDocument.load(contentResolver.openInputStream(Uri.parse(pdfFilename)) as FileInputStream)
+        numberOfPages = document.numberOfPages
+        document.close()
+
+        processMode = 0
+        if (processMode == 0) {
+            // Local
+            runPdfOCRLocal(filename)
+        } else if (processMode == 1) {
+            // Cloud
+            postPdfToCloudRequest(filename)
         }
     }
 
-    private fun onPhotoTaken() {
-        photoTaken = true
-        val options = BitmapFactory.Options()
-        options.inSampleSize = 4
-        var bitmap = BitmapFactory.decodeFile(path, options)
+    private fun printEnergyStatus() {
+        mainActivityScope.launch(Dispatchers.Main) {
+            while (true) {
+                val current = LocalDateTime.now()
+                val chargeCounter: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+                val capacity: Long =
+                    mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+
+                if (prevChargeCounter != -1L)
+                    totalEnergyUsed += prevChargeCounter - chargeCounter
+                prevChargeCounter = chargeCounter
+
+//                Log.i(TAG, "Current Date and Time is: $current")
+//                Log.i(TAG, "Remaining battery capacity = $chargeCounter uAh")
+//                Log.i(TAG, "Remaining battery capacity = $capacity %")
+
+                currentTimeTextView.text = current.toString()
+                chargeCounterValueTextView.text = chargeCounter.toString()
+                capacityValueTextView.text = capacity.toString()
+                chargeCounterChangeValueTextView.text = totalEnergyUsed.toString()
+
+                delay(60000)
+            }
+        }
+    }
+
+    private fun logProcessData(filename: Uri, mode: String) {
+        endTime = Date()
+        endBatteryCapacity =
+            mBatteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+        val totalTime = df.format((endTime.time - startTime.time) / 1000.0)
+        val batteryChange = endBatteryCapacity - startBatteryCapacity
+
+        val fileSize = filename.let { contentResolver.query(it, null, null, null, null) }
+            ?.use { cursor ->
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                cursor.moveToFirst()
+                df.format(cursor.getLong(sizeIndex) / (1024.0 * 1024.0))
+            }
+
+        Log.v(
+            ML_TAG,
+            "mode: $mode, totalTime: $totalTime, fileSize: $fileSize, batteryChange: $batteryChange, numberOfPages: $numberOfPages, repeatJobs: $repeatJobs"
+        )
+
+        val trainingDataFile = File(LOGS_PATH, "trainingData.txt")
+
         try {
-            val exif = ExifInterface(path)
-            val exifOrientation: Int = exif.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_NORMAL
-            )
-            Log.v(TAG, "Orient: $exifOrientation")
-            var rotate = 0
-            when (exifOrientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> rotate = 90
-                ExifInterface.ORIENTATION_ROTATE_180 -> rotate = 180
-                ExifInterface.ORIENTATION_ROTATE_270 -> rotate = 270
+            FileOutputStream(trainingDataFile, true).bufferedWriter().use { writer ->
+                writer.append("$mode, $totalTime, $fileSize, $batteryChange, $numberOfPages, $repeatJobs\n")
             }
-            Log.v(TAG, "Rotation: $rotate")
-            if (rotate != 0) {
+        } catch (e: Exception) {
+            Log.v(TAG, "Exception while writing data logs: $e")
+        }
+    }
 
-                // Getting width & height of the given image.
-                val w = bitmap.width
-                val h = bitmap.height
+    private fun runPdfOCRLocal(filename: Uri) {
+        mainActivityScope.launch(Dispatchers.IO) {
+            val localOcrService = LocalOcr(applicationContext)
 
-                // Setting pre rotate
-                val mtx = Matrix()
-                mtx.preRotate(rotate.toFloat())
+            for (i in 1..repeatJobs) {
+                ocrResultTextView.text = ""
+                Log.i(TAG, "Running job $i out of $repeatJobs")
 
-                // Rotating Bitmap
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, w, h, mtx, false)
+                try {
+//                val ocrResult = localOcrService.runOCR(assets.open(pdfFilename) as FileInputStream)
+                    val ocrResult =
+                        localOcrService.runOCR(contentResolver.openInputStream(filename) as FileInputStream)
+//
+                    withContext(Dispatchers.Main) {
+                        ocrResultTextView.text = ocrResult
+                    }
+                } catch (e: IOException) {
+                    Log.e(TAG, "Exception thrown while rendering file", e)
+
+                    withContext(Dispatchers.Main) {
+                        uploadPdfButton.isEnabled = true
+                    }
+                }
             }
 
-            // Convert to ARGB_8888, required by tess
-            bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-        } catch (e: IOException) {
-            Log.e(TAG, "Couldn't correct orientation: $e")
+            logProcessData(filename, "local")
+            withContext(Dispatchers.Main) {
+                uploadPdfButton.isEnabled = true
+            }
+            // Continue the loop for testing
+            processPdf(filename)
         }
+    }
 
-        // _image.setImageBitmap( bitmap );
-        Log.v(TAG, "Before baseApi")
-        val baseApi = TessBaseAPI()
-        baseApi.setDebug(true)
-        baseApi.init(DATA_PATH, lang)
-        baseApi.setImage(bitmap)
-        var recognizedText = baseApi.utF8Text
-        baseApi.end()
+    @SuppressLint("SetTextI18n")
+    private fun postPdfToCloudRequest(filename: Uri) {
+        mainActivityScope.launch(Dispatchers.IO) {
+            ocrResultTextView.text = ""
+            Log.i(TAG, "Running job $cloudJobsDone out of $repeatJobs")
+            val postRequest = VolleyMultipartRequest(
+                Request.Method.POST, SERVICE_URL,
+                { response ->
+                    run {
+                        val jsonResult = JSONObject(String(response.data))
+                        val jobId = jsonResult.getString("job_id")
 
-        // You now have the text in recognizedText var, you can do anything with it.
-        // We will display a stripped out trimmed alpha-numeric version of it (if lang is eng)
-        // so that garbage doesn't make it to the display.
-        Log.v(TAG, "OCRED TEXT: $recognizedText")
-        if (lang.equals("eng", ignoreCase = true)) {
-            recognizedText = recognizedText.replace("[^a-zA-Z0-9]+".toRegex(), " ")
-        }
-        recognizedText = recognizedText.trim { it <= ' ' }
-        if (recognizedText.isNotEmpty()) {
-            ocrResultEditText.setText(
-                if (ocrResultEditText.text.toString()
-                        .isEmpty()
-                ) recognizedText else ocrResultEditText.text.toString() + " " + recognizedText
+                        getOcrResultFromCloudRequest(jobId, filename)
+                    }
+                },
+                {
+                    ocrResultTextView.text = "Failed sending the file to the cloud"
+                    uploadPdfButton.isEnabled = true
+                },
+//                assets.open(pdfFilename) as FileInputStream
+                contentResolver.openInputStream(filename) as FileInputStream?
             )
-            ocrResultEditText.setSelection(ocrResultEditText.text.toString().length)
+
+            requestQueue.add(postRequest)
         }
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun getOcrResultFromCloudRequest(jobId: String, filename: Uri) {
+        val getRequest = StringRequest(
+            Request.Method.GET, "$SERVICE_URL/$jobId",
+            { response ->
+                run {
+                    try {
+                        val jsonResult = JSONObject(response)
+                        val status = jsonResult.getString("status")
+
+                        when {
+                            jsonResult.has("error") -> {
+                                ocrResultTextView.text = jsonResult.getString("error")
+                            }
+                            status == "IN_PROGRESS" -> {
+                                mainActivityScope.launch(Dispatchers.IO) {
+                                    delay(5000)
+                                    getOcrResultFromCloudRequest(jobId, filename)
+                                }
+                            }
+                            status == "DONE" -> {
+                                ocrResultTextView.text = jsonResult.getString("result")
+                                cloudJobsDone += 1
+
+                                if (cloudJobsDone == repeatJobs) {
+                                    logProcessData(filename, "cloud")
+                                    uploadPdfButton.isEnabled = true
+                                    // Continue the loop for testing
+                                    processPdf(filename)
+                                } else {
+                                    postPdfToCloudRequest(filename)
+                                }
+                            }
+                        }
+                    } catch (e: JSONException) {
+                        Log.e(TAG, "Exception thrown while parsing a response", e)
+                        ocrResultTextView.text = "Failed getting the OCR result from cloud"
+                        uploadPdfButton.isEnabled = true
+                    }
+                }
+            },
+            {
+                ocrResultTextView.text = "Failed getting the OCR result from cloud"
+                uploadPdfButton.isEnabled = true
+            })
+
+        requestQueue.add(getRequest)
     }
 }
