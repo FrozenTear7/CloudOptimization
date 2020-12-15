@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
+import android.os.StrictMode
 import android.provider.OpenableColumns
 import android.util.Log
 import android.widget.Button
@@ -35,12 +36,10 @@ private const val TAG = "MainActivity"
 private const val ML_TAG = "TrainingData"
 private var LOGS_PATH = Environment.getExternalStorageDirectory().toString() + "/TrainingDataLogs"
 private const val FILE_MANAGER_INTENT_CODE = 11
-private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
-private const val repeatJobs = 50
 
-//private const val pdfFilename = "I2RM_4_PMendroch.pdf"
-//private const val pdfFilename =
-//    "content://com.android.providers.downloads.documents/document/msf%3A233693"
+//private const val SERVICE_URL = "https://cloud-optimization-server.herokuapp.com/ocr"
+private const val SERVICE_URL = "http://192.168.100.10:8080/ocr"
+private const val repeatJobs = 50
 
 class MainActivity : AppCompatActivity() {
     private lateinit var requestQueue: RequestQueue
@@ -71,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitNetwork().build())
 
         requestQueue = Volley.newRequestQueue(this)
         mBatteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
@@ -113,7 +114,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun processPdf(filename: Uri) {
         // Initially just randomize the location of service
-        var processMode = nextInt(2)
+        val processMode = nextInt(2)
 
         if (processMode == 0)
             Log.v(TAG, "Starting OCR locally")
@@ -199,11 +200,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runPdfOCRLocal(filename: Uri) {
+        ocrResultTextView.text = ""
         mainActivityScope.launch(Dispatchers.IO) {
             val localOcrService = LocalOcr(applicationContext)
 
             for (i in 1..repeatJobs) {
-                ocrResultTextView.text = ""
                 Log.i(TAG, "Running job $i out of $repeatJobs")
 
                 try {
@@ -247,9 +248,12 @@ class MainActivity : AppCompatActivity() {
                         getOcrResultFromCloudRequest(jobId, filename)
                     }
                 },
-                {
-                    ocrResultTextView.text = "Failed sending the file to the cloud"
-                    uploadPdfButton.isEnabled = true
+                { error ->
+                    run {
+                        Log.e(TAG, "Exception thrown while posting the file to the cloud: ", error)
+                        ocrResultTextView.text = "Failed sending the file to the cloud"
+                        uploadPdfButton.isEnabled = true
+                    }
                 },
 //                assets.open(pdfFilename) as FileInputStream
                 contentResolver.openInputStream(filename) as FileInputStream?
