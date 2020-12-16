@@ -11,6 +11,7 @@ import android.os.StrictMode
 import android.provider.OpenableColumns
 import android.util.Log
 import android.widget.Button
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.android.volley.Request
@@ -50,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var currentTimeTextView: TextView
     private lateinit var uploadPdfButton: Button
     private lateinit var ocrResultTextView: TextView
+    private lateinit var modeTextView: TextView
+    private lateinit var jobProgressBar: ProgressBar
 
     private lateinit var mBatteryManager: BatteryManager
     private var prevChargeCounter = -1L
@@ -83,6 +86,8 @@ class MainActivity : AppCompatActivity() {
         currentTimeTextView = findViewById(R.id.currentTimeTextView)
         uploadPdfButton = findViewById(R.id.uploadPdfButton)
         ocrResultTextView = findViewById(R.id.ocrResultTextView)
+        modeTextView = findViewById(R.id.modeTextView)
+        jobProgressBar = findViewById(R.id.jobProgressBar)
 
         // Setup energy counters
         printEnergyStatus()
@@ -112,15 +117,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("SetTextI18n")
     private fun processPdf(filename: Uri) {
         // Initially just randomize the location of service
         val processMode = nextInt(2)
+        cloudJobsDone = 0
 
-        if (processMode == 0)
-            Log.v(TAG, "Starting OCR locally")
-        else if (processMode == 1)
-            Log.v(TAG, "Starting OCR in cloud")
+        if (processMode == 0) {
+            modeTextView.text = "Running OCR locally"
+            Log.v(TAG, "Running OCR locally")
+        } else if (processMode == 1) {
+            modeTextView.text = "Running OCR in cloud"
+            Log.v(TAG, "Running OCR in cloud")
+        }
 
+        jobProgressBar.progress = 0
         uploadPdfButton.isEnabled = false
 
         // Start timer
@@ -169,6 +180,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("SetTextI18n")
     private fun logProcessData(filename: Uri, mode: String) {
         endTime = Date()
         endBatteryCapacity =
@@ -197,10 +209,15 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.v(TAG, "Exception while writing data logs: $e")
         }
+
+        mainActivityScope.launch(Dispatchers.Main) {
+            ocrResultTextView.text =
+                ocrResultTextView.text.toString() + "\nmode: $mode, totalTime: $totalTime, fileSize: $fileSize, batteryChange: $batteryChange, numberOfPages: $numberOfPages, repeatJobs: $repeatJobs"
+        }
     }
 
     private fun runPdfOCRLocal(filename: Uri) {
-        ocrResultTextView.text = ""
+//        ocrResultTextView.text = ""
         mainActivityScope.launch(Dispatchers.IO) {
             val localOcrService = LocalOcr(applicationContext)
 
@@ -211,15 +228,18 @@ class MainActivity : AppCompatActivity() {
 //                val ocrResult = localOcrService.runOCR(assets.open(pdfFilename) as FileInputStream)
                     val ocrResult =
                         localOcrService.runOCR(contentResolver.openInputStream(filename) as FileInputStream)
-//
-                    withContext(Dispatchers.Main) {
-                        ocrResultTextView.text = ocrResult
-                    }
+
+//                    withContext(Dispatchers.Main) {
+//                        ocrResultTextView.text = ocrResult
+//                    }
                 } catch (e: IOException) {
                     Log.e(TAG, "Exception thrown while rendering file", e)
 
                     withContext(Dispatchers.Main) {
                         uploadPdfButton.isEnabled = true
+                        jobProgressBar.progress =
+                            (i.toDouble() / repeatJobs.toDouble() * 100).toInt()
+                        Log.v(TAG, (i.toDouble() / repeatJobs.toDouble() * 100).toInt().toString())
                     }
                 }
             }
@@ -235,8 +255,9 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetTextI18n")
     private fun postPdfToCloudRequest(filename: Uri) {
+//        ocrResultTextView.text = ""
+
         mainActivityScope.launch(Dispatchers.IO) {
-            ocrResultTextView.text = ""
             Log.i(TAG, "Running job $cloudJobsDone out of $repeatJobs")
             val postRequest = VolleyMultipartRequest(
                 Request.Method.POST, SERVICE_URL,
@@ -251,7 +272,8 @@ class MainActivity : AppCompatActivity() {
                 { error ->
                     run {
                         Log.e(TAG, "Exception thrown while posting the file to the cloud: ", error)
-                        ocrResultTextView.text = "Failed sending the file to the cloud"
+                        ocrResultTextView.text =
+                            ocrResultTextView.text.toString() + "\nFailed sending the file to the cloud"
                         uploadPdfButton.isEnabled = true
                     }
                 },
@@ -275,7 +297,10 @@ class MainActivity : AppCompatActivity() {
 
                         when {
                             jsonResult.has("error") -> {
-                                ocrResultTextView.text = jsonResult.getString("error")
+                                ocrResultTextView.text =
+                                    ocrResultTextView.text.toString() + "\n" + jsonResult.getString(
+                                        "error"
+                                    )
                             }
                             status == "IN_PROGRESS" -> {
                                 mainActivityScope.launch(Dispatchers.IO) {
@@ -284,8 +309,14 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                             status == "DONE" -> {
-                                ocrResultTextView.text = jsonResult.getString("result")
+//                                ocrResultTextView.text = jsonResult.getString("result")
                                 cloudJobsDone += 1
+                                jobProgressBar.progress =
+                                    (cloudJobsDone.toDouble() / repeatJobs.toDouble() * 100).toInt()
+                                Log.v(
+                                    TAG,
+                                    ((cloudJobsDone.toDouble() / repeatJobs.toDouble() * 100).toInt()).toString()
+                                )
 
                                 if (cloudJobsDone == repeatJobs) {
                                     logProcessData(filename, "cloud")
